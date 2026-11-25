@@ -1,0 +1,10 @@
+# Entorno virtual y archivos generados (no se suben a GitHub)
+.venv/
+__pycache__/
+*.pyc
+dist/
+build/
+*.spec
+.DS_Store
+
+# OJO: data/ y modelo/ SÍ se suben, porque la app publicada los necesita.

@@ -1,0 +1,24 @@
+[project]
+name = "desercion-universitaria"
+version = "0.1.0"
+description = "Sistema de análisis, monitoreo y alerta temprana de la deserción universitaria con aprendizaje automático"
+readme = "README.md"
+authors = [
+    { name = "JIMMY LOPEZ", email = "jimmylopezyule@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "imbalanced-learn>=0.14.2",
+    "joblib>=1.6.0",
+    "pandas>=3.1.1",
+    "scikit-learn==1.9.1",  # fija: el modelo .pkl se entrenó con esta versión
+    "streamlit>=1.67.0",
+]
+
+[project.scripts]
+entrenar = "desercion_universitaria.entrenar:main"
+app = "desercion_universitaria.lanzar_app:main"
+
+[build-system]
+requires = ["uv_build>=0.13.0,<0.14.0"]
+build-backend = "uv_build"
