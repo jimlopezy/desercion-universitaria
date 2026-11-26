@@ -1,14 +1,16 @@
 """
 Lógica compartida del sistema de ALERTA TEMPRANA DE DESERCIÓN UNIVERSITARIA.
 
-El modelo vive aquí, separado de la interfaz: la app web (app.py) solo arma
-los datos del estudiante, llama a predecir() y muestra el resultado.
+El modelo vive aquí, separado de la interfaz: la app web (app.py) solo arma los datos del
+estudiante, llama a predecir() y muestra el resultado.
 
-La preparación de los datos replica las decisiones de la Entrega 1 (EDA):
-  * Se limpian los nombres de columnas y se abrevian los semestres (S1, S2).
-  * Se descartan 3 variables casi constantes: Educational special needs,
-    International y Nacionality.
-  * El objetivo conserva sus 3 clases (Dropout / Enrolled / Graduate).
+Replica la ingeniería de características de la Entrega 2 (Entrega2Proyecto.ipynb):
+  * Objetivo binario: 1 = abandono (Dropout), 0 = no abandono (Enrolled o Graduate).
+  * Se quitan los estudiantes sin unidades inscritas en el 1.er o en el 2.º semestre.
+  * Se descartan variables irrelevantes o correlacionadas: Unemployment rate, Inflation rate, GDP,
+    Nacionality, S2 (enrolled), S2 (approved), S2 (grade) y S2 (evaluations).
+  * 5 categóricas nominales pasan a texto (tipo category) y 3 de escolaridad a escala ordinal.
+  * Quedan 28 variables. El modelo (HistGradientBoosting) usa las categóricas de forma nativa.
 """
 import json
 import sys
@@ -16,6 +18,7 @@ from functools import lru_cache
 from pathlib import Path
 
 import joblib
+import numpy as np
 import pandas as pd
 
 # Raíz del proyecto (donde está pyproject.toml): este archivo vive en
@@ -23,130 +26,91 @@ import pandas as pd
 RAIZ = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2]))
 RUTA_DATOS = RAIZ / "data" / "data.csv"
 CARPETA_MODELO = RAIZ / "modelo"
-RUTA_MODELO = CARPETA_MODELO / "modelo_desercion.pkl"
+RUTA_MODELO = CARPETA_MODELO / "modelo_desercion.joblib"
 RUTA_METRICAS = CARPETA_MODELO / "metricas_desercion.json"
 
 SEMILLA = 42
+UMBRAL = 0.5
 
-# ---------------------------------------------------------------------------
-# Variable objetivo
-# ---------------------------------------------------------------------------
-CLASES = ["Dropout", "Enrolled", "Graduate"]
-NOMBRE_CLASE = {"Dropout": "Deserta", "Enrolled": "Sigue matriculado", "Graduate": "Se gradúa"}
-COLORES = {"Dropout": "#d95f5f", "Enrolled": "#e0b84c", "Graduate": "#4c9be0"}  # paleta del notebook
+CLASES = {0: "No abandono", 1: "Abandono"}
+COLORES = {"Abandono": "#d95f5f", "No abandono": "#4c9be0"}
 
 # ---------------------------------------------------------------------------
 # Variables (nombres tal como quedan después de preparar())
 # ---------------------------------------------------------------------------
-DESCARTADAS = ["Educational special needs", "International", "Nacionality"]
+DESCARTADAS = ["Unemployment rate", "Inflation rate", "GDP", "Nacionality",
+               "S2 (enrolled)", "S2 (approved)", "S2 (grade)", "S2 (evaluations)"]
 
-CATEGORICAS = [
-    "Marital status", "Application mode", "Course", "Previous qualification",
-    "Mother's qualification", "Father's qualification",
-    "Mother's occupation", "Father's occupation",
+CATEGORICAS = ["Marital status", "Application mode", "Course", "Mother's occupation", "Father's occupation"]
+ORDINALES = ["Previous qualification", "Mother's qualification", "Father's qualification"]
+BINARIAS = ["Gender", "International", "Displaced", "Educational special needs",
+            "Daytime/evening attendance", "Scholarship holder", "Debtor", "Tuition fees up to date"]
+
+# Las 28 variables del modelo, en el orden del notebook
+COLUMNAS = [
+    "Marital status", "Application mode", "Course", "Mother's occupation", "Father's occupation",
+    "Gender", "Age at enrollment", "International", "Displaced", "Educational special needs",
+    "Application order", "Previous qualification", "Previous qualification (grade)", "Admission grade",
+    "Daytime/evening attendance",
+    "Mother's qualification", "Father's qualification", "Scholarship holder", "Debtor",
+    "Tuition fees up to date",
+    "S1 (credited)", "S1 (enrolled)", "S1 (evaluations)", "S1 (approved)", "S1 (grade)",
+    "S1 (without evaluations)",
+    "S2 (credited)", "S2 (without evaluations)",
 ]
-BINARIAS = [
-    "Daytime/evening attendance", "Displaced", "Debtor",
-    "Tuition fees up to date", "Gender", "Scholarship holder",
-]
-SEMESTRE = ["credited", "enrolled", "evaluations", "approved", "grade", "without evaluations"]
-NUMERICAS = (
-    ["Application order", "Previous qualification (grade)", "Admission grade", "Age at enrollment"]
-    + [f"S1 ({c})" for c in SEMESTRE]
-    + [f"S2 ({c})" for c in SEMESTRE]
-    + ["Unemployment rate", "Inflation rate", "GDP"]
-)
-MACRO = ["Unemployment rate", "Inflation rate", "GDP"]
+NUMERICAS = [c for c in COLUMNAS if c not in CATEGORICAS]
 
-# Orden de las 33 columnas que espera el modelo (36 originales - 3 descartadas)
-COLUMNAS = CATEGORICAS + BINARIAS + NUMERICAS
-
-# Nombres en español para mostrar en la interfaz
+# Nombres en español para la interfaz
 NOMBRES = {
     "Marital status": "Estado civil",
     "Application mode": "Modo de postulación",
-    "Application order": "Orden de preferencia de la postulación (0 = primera opción)",
     "Course": "Programa",
-    "Daytime/evening attendance": "Jornada",
-    "Previous qualification": "Formación previa",
-    "Previous qualification (grade)": "Nota de la formación previa (0-200)",
-    "Mother's qualification": "Escolaridad de la madre",
-    "Father's qualification": "Escolaridad del padre",
     "Mother's occupation": "Ocupación de la madre",
     "Father's occupation": "Ocupación del padre",
-    "Admission grade": "Nota de admisión (0-200)",
+    "Gender": "Género",
+    "Age at enrollment": "Edad al matricularse",
+    "International": "Estudiante internacional",
     "Displaced": "Vive desplazado de su residencia",
+    "Educational special needs": "Necesidades educativas especiales",
+    "Application order": "Orden de preferencia de la postulación (0 = primera opción)",
+    "Previous qualification": "Formación previa",
+    "Previous qualification (grade)": "Nota de la formación previa (0-200)",
+    "Admission grade": "Nota de admisión (0-200)",
+    "Daytime/evening attendance": "Jornada",
+    "Mother's qualification": "Escolaridad de la madre",
+    "Father's qualification": "Escolaridad del padre",
+    "Scholarship holder": "Tiene beca",
     "Debtor": "Tiene deudas con la institución",
     "Tuition fees up to date": "Matrícula al día",
-    "Gender": "Género",
-    "Scholarship holder": "Tiene beca",
-    "Age at enrollment": "Edad al matricularse",
-    "Unemployment rate": "Tasa de desempleo (%)",
-    "Inflation rate": "Inflación (%)",
-    "GDP": "PIB (variación %)",
-    **{f"S{s} ({c})": f"{n} semestre · {t}" for s, n in [(1, "1.er"), (2, "2.º")]
-       for c, t in zip(SEMESTRE, ["unidades convalidadas", "unidades inscritas",
-                                  "evaluaciones presentadas", "unidades aprobadas",
-                                  "nota promedio (0-20)", "unidades sin evaluación"])},
+    "S1 (credited)": "1.er semestre · unidades convalidadas",
+    "S1 (enrolled)": "1.er semestre · unidades inscritas",
+    "S1 (evaluations)": "1.er semestre · evaluaciones presentadas",
+    "S1 (approved)": "1.er semestre · unidades aprobadas",
+    "S1 (grade)": "1.er semestre · nota promedio (0-20)",
+    "S1 (without evaluations)": "1.er semestre · unidades sin evaluación",
+    "S2 (credited)": "2.º semestre · unidades convalidadas",
+    "S2 (without evaluations)": "2.º semestre · unidades sin evaluación",
+    # usadas solo en el análisis exploratorio
+    "S2 (approved)": "2.º semestre · unidades aprobadas",
+    "S2 (grade)": "2.º semestre · nota promedio (0-20)",
+    "S2 (enrolled)": "2.º semestre · unidades inscritas",
 }
 
-# Rangos de los controles del formulario: (mínimo, máximo, paso)
+# Rangos de los controles numéricos del formulario: (mínimo, máximo, paso)
 RANGOS = {
     "Application order": (0, 9, 1),
     "Previous qualification (grade)": (0.0, 200.0, 0.1),
     "Admission grade": (0.0, 200.0, 0.1),
     "Age at enrollment": (15, 80, 1),
-    **{f"S{s} ({c})": r for s in (1, 2) for c, r in {
-        "credited": (0, 30, 1), "enrolled": (0, 30, 1), "evaluations": (0, 50, 1),
-        "approved": (0, 30, 1), "grade": (0.0, 20.0, 0.1), "without evaluations": (0, 15, 1),
-    }.items()},
+    "S1 (credited)": (0, 30, 1), "S1 (enrolled)": (0, 30, 1), "S1 (evaluations)": (0, 50, 1),
+    "S1 (approved)": (0, 30, 1), "S1 (grade)": (0.0, 20.0, 0.1), "S1 (without evaluations)": (0, 15, 1),
+    "S2 (credited)": (0, 30, 1), "S2 (without evaluations)": (0, 15, 1),
 }
 
 # ---------------------------------------------------------------------------
-# Equivalencias código -> texto (diccionario de datos UCI #697)
+# Equivalencias de la Entrega 2 (código UCI -> texto / nivel ordinal)
 # ---------------------------------------------------------------------------
-ESCOLARIDAD = {
-    1: "Secundaria completa (12.º año)", 2: "Educación superior: bachillerato universitario",
-    3: "Educación superior: licenciatura", 4: "Educación superior: maestría",
-    5: "Educación superior: doctorado", 6: "Cursó algo de educación superior",
-    9: "12.º año sin terminar", 10: "11.º año sin terminar", 11: "7.º año (plan antiguo)",
-    12: "Otro: 11.º año", 13: "2.º año de curso complementario de secundaria",
-    14: "10.º año", 15: "10.º año sin terminar", 18: "Curso general de comercio",
-    19: "Educación básica 3.er ciclo (9.º-11.º año)", 20: "Curso complementario de secundaria",
-    22: "Curso técnico-profesional", 25: "Curso complementario de secundaria sin terminar",
-    26: "7.º año", 27: "2.º ciclo de secundaria general", 29: "9.º año sin terminar",
-    30: "8.º año", 31: "Curso general de administración y comercio",
-    33: "Contabilidad y administración complementaria", 34: "Desconocido",
-    35: "No sabe leer ni escribir", 36: "Sabe leer sin haber cursado 4.º año",
-    37: "Educación básica 1.er ciclo (4.º-5.º año)", 38: "Educación básica 2.º ciclo (6.º-8.º año)",
-    39: "Curso de especialización tecnológica", 40: "Educación superior: grado (1.er ciclo)",
-    41: "Curso de estudios superiores especializados", 42: "Curso técnico superior profesional",
-    43: "Educación superior: maestría (2.º ciclo)", 44: "Educación superior: doctorado (3.er ciclo)",
-}
-
-GRUPOS_OCUPACION = {
-    0: "Estudiante",
-    1: "Directivos, legisladores y gerentes",
-    2: "Especialistas en actividades intelectuales y científicas",
-    3: "Técnicos y profesionales de nivel medio",
-    4: "Personal administrativo",
-    5: "Servicios personales, seguridad y ventas",
-    6: "Agricultores y trabajadores calificados del agro y la pesca",
-    7: "Trabajadores calificados de la industria y la construcción",
-    8: "Operadores de máquinas y ensambladores",
-    9: "Trabajadores no calificados",
-    10: "Fuerzas armadas",
-    90: "Otra situación",
-    99: "Sin información",
-}
-
-ETIQUETAS = {  # tomadas del notebook (celda de análisis bivariado)
-    "Tuition fees up to date": {0: "No al día", 1: "Al día"},
-    "Scholarship holder": {0: "Sin beca", 1: "Con beca"},
-    "Debtor": {0: "Sin deuda", 1: "Con deuda"},
-    "Gender": {0: "Femenino", 1: "Masculino"},
-    "Displaced": {0: "No desplazado", 1: "Desplazado"},
-    "Daytime/evening attendance": {0: "Nocturno", 1: "Diurno"},
+ETIQUETAS = {
     "Marital status": {1: "Soltero", 2: "Casado", 3: "Viudo", 4: "Divorciado",
                        5: "Unión de hecho", 6: "Separado legalmente"},
     "Application mode": {
@@ -167,33 +131,95 @@ ETIQUETAS = {  # tomadas del notebook (celda de análisis bivariado)
         9556: "Higiene oral", 9670: "Gestión de publicidad y marketing",
         9773: "Periodismo y comunicación", 9853: "Educación básica",
         9991: "Gestión (nocturno)"},
-    "Previous qualification": ESCOLARIDAD,
-    "Mother's qualification": ESCOLARIDAD,
-    "Father's qualification": ESCOLARIDAD,
+}
+OCUPACION = {
+    0: "Estudiante",
+    1: "Representantes del Poder Legislativo y de Órganos Ejecutivos, Directores, Directores y Gerentes Ejecutivos",
+    2: "Especialistas en Actividades Intelectuales y Científicas",
+    3: "Técnicos y Profesiones de Nivel Intermedio", 4: "Personal Administrativo",
+    5: "Trabajadores de Servicios Personales, de Seguridad y Vendedores",
+    6: "Agricultores y Trabajadores Calificados de la Agricultura, Pesca y Silvicultura",
+    7: "Trabajadores Calificados de la Industria, Construcción y Artesanos",
+    8: "Operadores de Instalaciones y Máquinas y Trabajadores de Ensamblaje",
+    9: "Trabajadores No Calificados", 10: "Profesiones de las Fuerzas Armadas", 90: "Otra Situación",
+    99: "En blanco", 122: "Profesionales de la salud", 123: "Profesores",
+    125: "Especialistas en tecnologías de la información y la comunicación (TIC)",
+    131: "Técnicos y profesiones de nivel intermedio de ciencias e ingeniería",
+    132: "Técnicos y profesionales de nivel intermedio de la salud",
+    134: "Técnicos de nivel intermedio de servicios jurídicos, sociales, deportivos, culturales y similares",
+    141: "Empleados de oficina, secretarios en general y operadores de procesamiento de datos",
+    143: "Operadores de datos, contabilidad, estadística, servicios financieros y registros",
+    144: "Otro personal de apoyo administrativo",
+    151: "Trabajadores de servicios personales", 152: "Vendedores",
+    153: "Trabajadores de cuidado personal y similares",
+    171: "Trabajadores calificados de la construcción y similares, excepto electricistas",
+    173: "Trabajadores calificados de la impresión, fabricación de instrumentos de precisión, joyeros, artesanos y similares",
+    175: "Trabajadores de la transformación de alimentos, carpintería, confección y otras industrias y oficios",
+    191: "Trabajadores de limpieza",
+    192: "Trabajadores no calificados de la agricultura, producción animal, pesca y silvicultura",
+    193: "Trabajadores no calificados de la industria extractiva, construcción, manufactura y transporte",
+    194: "Asistentes de preparación de comidas",
+}
+ETIQUETAS["Mother's occupation"] = OCUPACION
+ETIQUETAS["Father's occupation"] = OCUPACION
+
+NIVEL_ACADEMICO = {  # escala ordinal de la formación previa del estudiante
+    38: 0, 19: 1, 15: 2, 14: 3, 10: 4, 12: 5, 9: 6, 1: 7, 39: 8, 42: 9, 6: 10,
+    2: 11, 3: 11, 40: 11, 4: 12, 43: 12, 5: 13,
+}
+NIVEL_ACADEMICO_PADRES = {  # escala ordinal de la escolaridad de los padres
+    35: 0, 36: 1, 37: 2, 38: 3, 11: 4, 26: 5, 30: 6, 29: 7, 19: 8, 14: 9, 10: 10, 12: 11,
+    27: 12, 9: 13, 1: 14, 18: 15, 22: 16, 39: 17, 42: 18, 6: 19, 2: 20, 3: 20, 40: 20,
+    41: 21, 4: 22, 43: 22, 5: 23, 44: 23,
+}
+ESCALAS = {"Previous qualification": NIVEL_ACADEMICO,
+           "Mother's qualification": NIVEL_ACADEMICO_PADRES,
+           "Father's qualification": NIVEL_ACADEMICO_PADRES}
+
+ESCOLARIDAD = {  # texto de cada código de escolaridad (para mostrar en el formulario)
+    1: "Secundaria (12.º año) o equivalente", 2: "Superior: pregrado (bachelor)", 3: "Superior: grado",
+    4: "Superior: maestría", 5: "Superior: doctorado", 6: "Frecuencia de educación superior",
+    9: "12.º año no completado", 10: "11.º año no completado", 11: "7.º año (antiguo)",
+    12: "Otro: 11.º año", 14: "10.º año", 15: "10.º año no completado", 18: "Curso de comercio general",
+    19: "Básica 3.er ciclo (9.º-11.º año)", 22: "Curso técnico-profesional", 26: "7.º año",
+    27: "2.º ciclo del bachillerato general", 29: "9.º año no completado", 30: "8.º año",
+    35: "No sabe leer ni escribir", 36: "Sabe leer sin tener 4.º año", 37: "Básica 1.er ciclo (4.º-5.º año)",
+    38: "Básica 2.º ciclo (6.º-8.º año)", 39: "Curso de especialización tecnológica",
+    40: "Superior: grado (1.er ciclo)", 41: "Estudios superiores especializados",
+    42: "Técnico superior profesional", 43: "Superior: maestría (2.º ciclo)",
+    44: "Superior: doctorado (3.er ciclo)",
+}
+
+TEXTO_BINARIAS = {
+    "Tuition fees up to date": {0: "No al día", 1: "Al día"},
+    "Scholarship holder": {0: "Sin beca", 1: "Con beca"},
+    "Debtor": {0: "Sin deuda", 1: "Con deuda"},
+    "Gender": {0: "Femenino", 1: "Masculino"},
+    "Displaced": {0: "No desplazado", 1: "Desplazado"},
+    "Daytime/evening attendance": {0: "Nocturno", 1: "Diurno"},
+    "International": {0: "Nacional", 1: "Internacional"},
+    "Educational special needs": {0: "Sin necesidades especiales", 1: "Con necesidades especiales"},
 }
 
 
 def etiqueta(columna: str, codigo) -> str:
-    """Texto legible para el código de una variable categórica o binaria."""
+    """Texto legible del código UCI de una variable categórica, ordinal o binaria."""
     try:
         codigo = int(codigo)
     except (TypeError, ValueError):
         return str(codigo)
-    if columna in ("Mother's occupation", "Father's occupation"):
-        if codigo in GRUPOS_OCUPACION:
-            return GRUPOS_OCUPACION[codigo]
-        if codigo >= 100:  # subgrupos de 3 dígitos: 1 + grupo + subgrupo (101-103 = fuerzas armadas)
-            grupo = (codigo // 10) % 10 or 10
-            return f"{GRUPOS_OCUPACION[grupo]} (subgrupo {codigo})"
-        return f"Código {codigo}"
+    if columna in ORDINALES:
+        return ESCOLARIDAD.get(codigo, f"Código {codigo}")
+    if columna in TEXTO_BINARIAS:
+        return TEXTO_BINARIAS[columna].get(codigo, str(codigo))
     return ETIQUETAS.get(columna, {}).get(codigo, f"Código {codigo}")
 
 
 # ---------------------------------------------------------------------------
-# Datos
+# Datos e ingeniería de características
 # ---------------------------------------------------------------------------
 def preparar(df: pd.DataFrame) -> pd.DataFrame:
-    """Limpieza de nombres de la Entrega 1: quita espacios/tabuladores y abrevia los semestres."""
+    """Estandarización de nombres del notebook: quita espacios/tabuladores y abrevia los semestres."""
     df = df.copy()
     df.columns = df.columns.str.strip()
     df.columns = (df.columns.str.replace("Curricular units 1st sem", "S1", regex=False)
@@ -219,16 +245,66 @@ def cargar_datos() -> pd.DataFrame:
     return leer_csv(RUTA_DATOS)
 
 
+def objetivo_binario(target: pd.Series) -> pd.Series:
+    """'Dropout' -> 1 y 'Enrolled'/'Graduate' -> 0. También acepta una columna que ya venga en 0/1."""
+    if pd.api.types.is_numeric_dtype(target):
+        return target.astype(int)
+    return (target.astype(str).str.strip() == "Dropout").astype(int)
+
+
+def sin_unidades(df: pd.DataFrame) -> pd.Series:
+    """Estudiantes que el notebook excluye: sin unidades inscritas en el 1.er o en el 2.º semestre."""
+    s1 = df["S1 (enrolled)"] == 0
+    s2 = df["S2 (enrolled)"] == 0 if "S2 (enrolled)" in df.columns else False
+    return s1 | s2
+
+
+def transformar(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Aplica la ingeniería de características a datos con los códigos de UCI y devuelve las 28 columnas.
+    Los códigos que el notebook no tiene en sus equivalencias quedan como vacío (NaN).
+    """
+    X = df[[c for c in COLUMNAS if c in df.columns]].copy()
+    for c in CATEGORICAS:
+        X[c] = pd.to_numeric(X[c], errors="coerce").map(ETIQUETAS[c])
+    for c, escala in ESCALAS.items():
+        X[c] = pd.to_numeric(X[c], errors="coerce").map(escala)
+    return X[COLUMNAS]
+
+
 def columnas_faltantes(df: pd.DataFrame) -> list[str]:
     return [c for c in COLUMNAS if c not in df.columns]
+
+
+def datos_modelado(df: pd.DataFrame):
+    """Pasos del notebook para armar X, y (objetivo binario, filtro, descarte y dropna)."""
+    df = df.copy()
+    df["Target"] = objetivo_binario(df["Target"])
+    df = df.loc[~(df["S1 (enrolled)"] == 0) & ~(df["S2 (enrolled)"] == 0)]
+    X = transformar(df)
+    validas = X.notna().all(axis=1)
+    X, y = X.loc[validas], df.loc[validas, "Target"]
+    for c in CATEGORICAS:
+        X[c] = X[c].astype("category").cat.remove_unused_categories()
+    return X, y
+
+
+def a_categorias(X: pd.DataFrame, categorias: dict, como_texto: bool = False) -> pd.DataFrame:
+    """Usa exactamente las categorías del entrenamiento; una categoría desconocida queda como vacío."""
+    X = X.copy()
+    for c in CATEGORICAS:
+        X[c] = pd.Categorical(X[c], categories=categorias[c])
+        if como_texto:  # CatBoost recibe las categóricas como texto
+            X[c] = X[c].astype(str)
+    return X
 
 
 # ---------------------------------------------------------------------------
 # Modelo
 # ---------------------------------------------------------------------------
 @lru_cache(maxsize=1)
-def cargar_modelo():
-    """Carga el pipeline entrenado una sola vez (las siguientes llamadas usan la caché)."""
+def cargar_modelo() -> dict:
+    """Carga el artefacto entrenado (modelo + columnas + categorías + umbral) una sola vez."""
     if not RUTA_MODELO.exists():
         raise FileNotFoundError("No encontré el modelo. Ejecuta primero:  uv run entrenar")
     return joblib.load(RUTA_MODELO)
@@ -239,50 +315,54 @@ def cargar_metricas() -> dict:
     return json.loads(RUTA_METRICAS.read_text(encoding="utf-8"))
 
 
-def nivel_riesgo(prob_desercion: float) -> str:
-    if prob_desercion >= 0.6:
+def nivel_riesgo(prob: float, umbral: float = UMBRAL) -> str:
+    if prob >= umbral:
         return "Alto"
-    if prob_desercion >= 0.3:
+    if prob >= 0.3:
         return "Medio"
     return "Bajo"
 
 
 def predecir(datos) -> pd.DataFrame:
     """
-    Recibe un estudiante (dict) o varios (DataFrame) y devuelve, por fila:
-    la probabilidad de cada clase, la clase predicha, la alerta Desertor / No desertor
-    con su confianza y un nivel de riesgo según la probabilidad de deserción.
+    Recibe un estudiante (dict) o varios (DataFrame) con los códigos de UCI y devuelve por fila:
+    la probabilidad de abandono, la clasificación con el umbral del modelo, la confianza,
+    un nivel de riesgo y si había códigos que el modelo no conoce.
     """
-    X = pd.DataFrame([datos]) if isinstance(datos, dict) else preparar(datos)
-    faltan = columnas_faltantes(X)
+    df = pd.DataFrame([datos]) if isinstance(datos, dict) else preparar(datos)
+    faltan = columnas_faltantes(df)
     if faltan:
         raise ValueError("Faltan columnas: " + ", ".join(faltan))
 
-    modelo = cargar_modelo()
-    proba = modelo.predict_proba(X[COLUMNAS])
-    clases = list(modelo.classes_)
-    res = pd.DataFrame(proba, columns=[f"prob_{c}" for c in clases], index=X.index)
-    res["prediccion"] = [clases[i] for i in proba.argmax(axis=1)]
-    res["resultado_estimado"] = res["prediccion"].map(NOMBRE_CLASE)
-    res["alerta"] = res["prediccion"].map(lambda c: "Desertor" if c == "Dropout" else "No desertor")
-    res["confianza"] = proba.max(axis=1)
-    res["nivel_riesgo"] = res["prob_Dropout"].map(nivel_riesgo)
+    art = cargar_modelo()
+    X = transformar(df)
+    desconocidos = X.isna().any(axis=1)
+    X = a_categorias(X, art["categorias"], art.get("requiere_texto", False))[art["columnas"]]
+    prob = art["modelo"].predict_proba(X)[:, 1]
+    umbral = art.get("umbral", UMBRAL)
+
+    res = pd.DataFrame(index=df.index)
+    res["prob_abandono"] = prob
+    res["prediccion"] = (prob >= umbral).astype(int)
+    res["clasificacion"] = res["prediccion"].map(CLASES)
+    res["confianza"] = np.where(res["prediccion"] == 1, prob, 1 - prob)
+    res["nivel_riesgo"] = [nivel_riesgo(p, umbral) for p in prob]
+    res["codigos_desconocidos"] = desconocidos.values
+    res["fuera_de_alcance"] = sin_unidades(df).values  # el modelo no se entrenó con estos casos
     return res
 
 
 def senales_de_riesgo(d: dict) -> list[str]:
-    """Señales que el análisis exploratorio (Entrega 1) asoció con más deserción."""
+    """Señales que el análisis de los datos asoció con más abandono."""
     senales = []
     if int(d["Tuition fees up to date"]) == 0:
-        senales.append("La matrícula **no está al día** (la variable más asociada con el resultado, V de Cramér 0,43).")
+        senales.append("La matrícula **no está al día** (la variable categórica más asociada con el abandono).")
     if int(d["Debtor"]) == 1:
-        senales.append("Tiene **deudas** con la institución (V de Cramér 0,24).")
+        senales.append("Tiene **deudas** con la institución.")
     if int(d["Scholarship holder"]) == 0:
-        senales.append("**No tiene beca** (los becados desertan menos; V de Cramér 0,30).")
+        senales.append("**No tiene beca** (los becados abandonan menos).")
     if int(d["S1 (approved)"]) <= 2:
-        senales.append("Aprobó **0-2 unidades en el 1.er semestre**: en el EDA, más del 70 % de ese grupo desertó.")
-    if int(d["S2 (enrolled)"]) > 0 and int(d["S2 (approved)"]) == 0:
-        senales.append("No aprobó ninguna unidad del **2.º semestre** teniendo unidades inscritas.")
+        senales.append("Aprobó **0-2 unidades en el 1.er semestre**: más del 70 % de ese grupo abandonó.")
     return senales
 
 

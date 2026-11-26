@@ -1,6 +1,6 @@
 # Librerías del proyecto (alternativa a uv:  pip install -r requirements.txt)
 # Con uv no hace falta: las versiones exactas están en uv.lock.
 pandas>=3.1.1
-scikit-learn==1.9.1   # misma versión con la que se entrenó modelo/modelo_desercion.pkl
+scikit-learn==1.9.1   # misma versión con la que se entrenó modelo/modelo_desercion.joblib
 joblib>=1.6.0
 streamlit>=1.67.0

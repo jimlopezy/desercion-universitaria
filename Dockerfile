@@ -21,7 +21,7 @@ ENV HOME=/home/user \
 WORKDIR $HOME/app
 
 # 1) Librerías: con uv.lock se instalan exactamente las mismas versiones que en local
-#    (importante: el modelo .pkl se debe cargar con la misma versión de scikit-learn).
+#    (importante: el modelo .joblib se debe cargar con la misma versión de scikit-learn).
 COPY --chown=user pyproject.toml uv.lock .python-version README.md ./
 RUN uv sync --frozen --no-dev --no-install-project
 

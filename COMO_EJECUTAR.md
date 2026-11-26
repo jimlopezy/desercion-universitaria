@@ -30,13 +30,13 @@ desercion-universitaria\
 │   └── data.csv                ← dataset del notebook (UCI #697, 4.424 estudiantes)
 │
 ├── modelo\
-│   ├── modelo_desercion.pkl    ← modelo entrenado (Random Forest + class_weight)
-│   └── metricas_desercion.json ← métricas, comparación de modelos y datos del formulario
+│   ├── modelo_desercion.joblib ← modelo entrenado (HistGradientBoosting de la Entrega 2, umbral 0,5)
+│   └── metricas_desercion.json ← métricas, comparación de modelos, curvas y datos del formulario
 │
 └── src\desercion_universitaria\
     ├── __init__.py
-    ├── core.py                 ← preparación de datos (decisiones del EDA), carga del modelo y predicción
-    ├── entrenar.py             ← compara 4 modelos y guarda el mejor en modelo\
+    ├── core.py                 ← ingeniería de características de la Entrega 2, carga del modelo y predicción
+    ├── entrenar.py             ← replica el modelado de la Entrega 2 y guarda el modelo en modelo\
     ├── app.py                  ← la app web (Streamlit) con sus 4 pestañas
     └── lanzar_app.py           ← permite abrir la app con:  uv run app
 ```
@@ -80,10 +80,10 @@ La terminal queda ocupada porque está funcionando como servidor: para detener l
 
 | Pestaña | Para qué sirve |
 |---|---|
-| 🧑‍🎓 Evaluar estudiante | Llenar el formulario y ver la probabilidad de deserción y el nivel de riesgo |
+| 🧑‍🎓 Evaluar estudiante | Llenar el formulario y ver la probabilidad de abandono, la clasificación y el nivel de riesgo |
 | 📂 Evaluar grupo (CSV) | Subir un CSV con varios estudiantes, o activar el ejemplo con el conjunto de prueba |
-| 📊 Análisis exploratorio | El EDA del notebook, interactivo |
-| 🤖 Sobre el modelo | Comparación de modelos, métricas, matriz de confusión e importancia de variables |
+| 📊 Análisis de los datos | Exploración interactiva del dataset y resumen de la ingeniería de características |
+| 🤖 Sobre el modelo | Métricas, curvas ROC y precisión-recall, comparación de modelos, balanceo e importancia de variables |
 
 ---
 
@@ -92,17 +92,19 @@ La terminal queda ocupada porque está funcionando como servidor: para detener l
 Solo hace falta si cambian los datos (`data\data.csv`) o el código del modelo:
 
 ```powershell
-uv run entrenar
+uv run entrenar            # con los hiperparámetros elegidos en la Entrega 2
+uv run entrenar --buscar   # repite la búsqueda aleatoria de hiperparámetros
 ```
 
-Para comparar también **SMOTE**, como propone el notebook:
+Como `imbalanced-learn` ya está en el proyecto, el entrenamiento compara los 9 métodos de balanceo del
+notebook. Para comparar también los 3 modelos (HistGB, LightGBM y CatBoost):
 
 ```powershell
-uv add imbalanced-learn
+uv add lightgbm catboost
 uv run entrenar
 ```
 
-El entrenamiento reemplaza `modelo\modelo_desercion.pkl` y `modelo\metricas_desercion.json`.
+El entrenamiento reemplaza `modelo\modelo_desercion.joblib` y `modelo\metricas_desercion.json`.
 La próxima vez que abras la app, ya usa el modelo nuevo.
 
 ---
